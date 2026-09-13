@@ -1484,7 +1484,7 @@ const T = {
     icsHow:'ملف التقويم يحتوي على كل وردياتك الليلية ومع كل وردية تنبيهان. بعد التحميل يجب فتح الملف وإضافة الأحداث فعليًا إلى تقويم الهاتف.',
     icsWhyNotPush:'صفحة الويب لا تطلق إشعارًا مجدولًا بعد إغلاقها، لذلك التنبيه يعتمد على تطبيق التقويم في الهاتف بعد استيراد ملف التقويم.',
     icsInstallTitle:'إكمال إعداد التذكير',
-    icsAndroid:'على Android: افتح ملف .ics بعد التحميل واختر تطبيق التقويم إذا ظهر. بعض أجهزة Android لا تستورد الملف مباشرة داخل Google Calendar من التطبيق، وفي هذه الحالة استخدم Google Calendar على الويب لاستيراد الملف، أو افتحه بتطبيق تقويم يدعم ملفات ICS.',
+    icsAndroid:'على Android: بعد تنزيل الملف اختر Samsung Calendar أو تطبيق تقويم يدعم ملفات ICS، ثم اضغط حفظ. لا تختَر تطبيق Google Calendar لفتح الملف مباشرة، لأنه قد يعرض Unable to launch event. إذا لم يظهر Samsung Calendar أو فشل الاستيراد، استخدم Google Calendar على الكمبيوتر لاستيراد الملف ثم فعّل مزامنة التقويم على الموبايل.',
     icsIphone:'على iPhone: افتح ملف .ics بعد التحميل ثم اختر إضافة الكل إلى التقويم.',
     icsDesktop:'افتح ملف .ics بتطبيق التقويم الذي تستخدمه، ثم وافق على إضافة الأحداث.',
     icsNotifyCheck:'بعد الإضافة تأكد من السماح بإشعارات تطبيق التقويم من إعدادات الهاتف.',
@@ -1732,7 +1732,7 @@ const T = {
     icsHow:'The calendar file contains all of your night shifts and two alerts for each shift. After downloading it, open the file and actually add the events to your phone calendar.',
     icsWhyNotPush:'A web page does not fire a scheduled notification after it is closed, so reminders depend on the phone calendar after the calendar file is imported.',
     icsInstallTitle:'Finish reminder setup',
-    icsAndroid:'On Android: open the .ics file after downloading it and choose a calendar app if offered. Some Android devices do not import ICS files directly into the Google Calendar app. In that case, import it using Google Calendar on the web, or open it with a calendar app that supports ICS files.',
+    icsAndroid:'On Android: after downloading the file, choose Samsung Calendar or another calendar app that supports ICS files, then save the events. Do not choose the Google Calendar app to open the file directly because it may show Unable to launch event. If Samsung Calendar is unavailable or import still fails, import the file into Google Calendar on a computer and sync the calendar to the phone.',
     icsIphone:'On iPhone: open the .ics file after downloading it, then choose Add All to Calendar.',
     icsDesktop:'Open the .ics file with your calendar app, then approve adding the events.',
     icsNotifyCheck:'After importing, make sure calendar notifications are allowed in your phone settings.',
@@ -5006,26 +5006,44 @@ const GateBG = {
 const ICS = {
   esc(t){ return String(t==null?'':t)
     .replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n'); },
-  fold(l){ /* RFC5545: keep lines short; split on character boundaries */
-    if(l.length<=70) return l;
-    let out='', i=0;
-    while(i<l.length){ const n=(i===0?70:69); out+=(i?'\r\n ':'')+l.slice(i,i+n); i+=n; }
-    return out;
+
+  /* RFC 5545 folding must respect UTF-8 byte length, not JavaScript character count. */
+  fold(line){
+    line=String(line==null?'':line);
+    const enc=new TextEncoder(), parts=[];
+    let cur='', limit=75;
+    for(const ch of line){
+      const trial=cur+ch;
+      if(enc.encode(trial).length>limit && cur){
+        parts.push(cur); cur=ch; limit=74; /* continuation line begins with one space */
+      }else cur=trial;
+    }
+    parts.push(cur);
+    return parts.join('\r\n ');
   },
+
   stamp(d){ const p=n=>String(n).padStart(2,'0');
-    return d.getUTCFullYear()+p(d.getUTCMonth()+1)+p(d.getUTCDate())+'T'+p(d.getUTCHours())+p(d.getUTCMinutes())+'00Z'; },
-  local(dateStr,hhmm){ const p=n=>String(n).padStart(2,'0');
-    const d=parseISO(dateStr), [H,M]=String(hhmm||'16:00').split(':').map(Number);
-    return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'T'+p(H||0)+p(M||0)+'00'; },
-  plus(dateStr,hhmm,hours){ const p=n=>String(n).padStart(2,'0');
-    const d=parseISO(dateStr), [H,M]=String(hhmm||'16:00').split(':').map(Number);
-    d.setHours(H||0,M||0,0,0); d.setMinutes(d.getMinutes()+Math.round((hours||16)*60));
-    return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'T'+p(d.getHours())+p(d.getMinutes())+'00'; },
+    return d.getUTCFullYear()+p(d.getUTCMonth()+1)+p(d.getUTCDate())+'T'+p(d.getUTCHours())+p(d.getUTCMinutes())+p(d.getUTCSeconds())+'Z'; },
+
+  /* Convert a Cairo wall-clock date/time to UTC so Android parsers do not need VTIMEZONE. */
+  cairoUtc(dateStr,hhmm){
+    const [y,m,d]=String(dateStr).split('-').map(Number), [H,M]=String(hhmm||'16:00').split(':').map(Number);
+    let ms=Date.UTC(y,m-1,d,H||0,M||0,0);
+    const fmt=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Cairo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+    for(let i=0;i<3;i++){
+      const o={}; fmt.formatToParts(new Date(ms)).forEach(x=>{ if(x.type!=='literal') o[x.type]=+x.value; });
+      const seen=Date.UTC(o.year,o.month-1,o.day,o.hour,o.minute,o.second||0);
+      const wanted=Date.UTC(y,m-1,d,H||0,M||0,0);
+      const diff=wanted-seen;
+      if(!diff) break;
+      ms+=diff;
+    }
+    return new Date(ms);
+  },
 
   nightStart(){ return (Data.state.settings.nightStart)||'16:00'; },
   lead(){ return Math.max(0,Math.min(168, +Data.state.settings.leadHours||24)); },
 
-  /* every ل shift of one engineer in the current cycle */
   eventsFor(eng){
     const out=[], A=Data.A(), m=A[eng.id]||{};
     Data.dates().forEach(d=>{ if(m[d]==='L') out.push(d); });
@@ -5035,53 +5053,48 @@ const ICS = {
   build(engs,opts){
     opts=opts||{};
     const now=this.stamp(new Date()), st=this.nightStart(), dur=shiftHours('L')||16;
-    const lead=this.lead();
-    const L=[];
-    L.push('BEGIN:VCALENDAR','VERSION:2.0','CALSCALE:GREGORIAN','METHOD:PUBLISH',
-           'PRODID:-//WE Middle Delta//Unified Shift Roster//AR',
-           this.fold('X-WR-CALNAME:'+this.esc(I18N.t('nightCalName')+' — '+Data.cycleName())),
-           'X-WR-TIMEZONE:Africa/Cairo');
+    const lead=this.lead(), L=[];
+    L.push('BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//WE Middle Delta//Unified Shift Roster//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH',
+      this.fold('X-WR-CALNAME:'+this.esc(I18N.t('nightCalName')+' - '+Data.cycleName())));
     let n=0;
     engs.forEach(e=>{
       this.eventsFor(e).forEach(d=>{
         n++;
-        const uid='we-'+Data.state.activeCycle+'-'+e.id+'-'+d+'@middledelta.we';
+        const start=this.cairoUtc(d,st), finish=new Date(start.getTime()+Math.round(dur*36e5));
+        const uid=('we-'+Data.state.activeCycle+'-'+e.id+'-'+d+'@middledelta.we').replace(/\s+/g,'-');
         const nm=(e.lang==='en'?'Eng. ':'م. ')+fullName(e);
-        const title=(e.lang==='en'?'Night shift (ل) — ':'وردية ليلية (ل) — ')+fullName(e);
+        const title=(e.lang==='en'?'Night shift (ل) - ':'وردية ليلية (ل) - ')+fullName(e);
         const desc=(e.lang==='en'
-          ? 'Unified Shift Roster – Middle Delta Engineers\\nEngineer: '+nm+'\\nShift: ل — Night ('+dur+'h)\\nDept.: '+(DEPT_EN[e.dept]||e.dept)
-          : 'الوردية الموحدة لمهندسين وسط الدلتا\\nالمهندس: '+nm+'\\nالوردية: ل — ليلية ('+dur+' ساعة)\\nالإدارة: '+e.dept)
-          +'\\n\\nWE Unified Shift Management System\\nPowered By Eng. Ahmed Rozaiq';
+          ? 'Unified Shift Roster - Middle Delta Engineers\nEngineer: '+nm+'\nShift: ل - Night ('+dur+'h)\nDept.: '+(DEPT_EN[e.dept]||e.dept)
+          : 'الوردية الموحدة لمهندسين وسط الدلتا\nالمهندس: '+nm+'\nالوردية: ل - ليلية ('+dur+' ساعة)\nالإدارة: '+e.dept)
+          +'\n\nWE Unified Shift Management System\nPowered By Eng. Ahmed Rozaiq';
         L.push('BEGIN:VEVENT',
-          'UID:'+uid,'DTSTAMP:'+now,
-          'DTSTART;TZID=Africa/Cairo:'+this.local(d,st),
-          'DTEND;TZID=Africa/Cairo:'+this.plus(d,st,dur),
+          this.fold('UID:'+this.esc(uid)),
+          'DTSTAMP:'+now,
+          'DTSTART:'+this.stamp(start),
+          'DTEND:'+this.stamp(finish),
           this.fold('SUMMARY:'+this.esc(title)),
-          this.fold('DESCRIPTION:'+desc),
-          'CATEGORIES:WE,NIGHT-SHIFT',
-          'STATUS:CONFIRMED','TRANSP:OPAQUE','SEQUENCE:0');
-        /* main reminder */
+          this.fold('DESCRIPTION:'+this.esc(desc)),
+          'CATEGORIES:WE,NIGHT-SHIFT','STATUS:CONFIRMED','TRANSP:OPAQUE','SEQUENCE:0');
         L.push('BEGIN:VALARM','ACTION:DISPLAY','TRIGGER;RELATED=START:-PT'+lead+'H',
           this.fold('DESCRIPTION:'+this.esc(I18N.t('nightAlarm'))),'END:VALARM');
-        /* short reminder just before the shift; avoid a duplicate when lead is already 2h */
         if(lead!==2) L.push('BEGIN:VALARM','ACTION:DISPLAY','TRIGGER;RELATED=START:-PT2H',
           this.fold('DESCRIPTION:'+this.esc(I18N.t('nightAlarm2'))),'END:VALARM');
         L.push('END:VEVENT');
       });
     });
     L.push('END:VCALENDAR');
-    return {text:L.join('\r\n'), count:n};
+    return {text:L.join('\r\n')+'\r\n', count:n};
   },
 
   download(engs,name){
     const r=this.build(engs);
     if(!r.count){ UI.toast(I18N.t('noNightShifts'),'warn'); return 0; }
-    /* the BOM keeps Arabic readable in every calendar app */
-    /* name the file after the engineer when it is a single person */
-    const auto = (engs.length===1 && engs[0] && engs[0].name)
+    const auto=(engs.length===1 && engs[0] && engs[0].name)
       ? 'WE-Night-'+String(engs[0].name).trim().replace(/\s+/g,'-')
       : 'WE-Night-Shifts';
-    IO.download(new Blob(['\ufeff'+r.text],{type:'text/calendar;charset=utf-8'}),
+    /* No UTF-8 BOM. Some Android calendar parsers treat BOM before BEGIN:VCALENDAR as invalid. */
+    IO.download(new Blob([r.text],{type:'text/calendar;charset=utf-8'}),
       (name||auto)+'-'+Data.cycle().start+'.ics');
     Data.state.history.push({id:uid('h'),ts:Date.now(),type:'calendar',note:(name||'')+' · '+r.count});
     Data.save();
@@ -5104,8 +5117,7 @@ const ICS = {
 
   dialog(){
     const engs=Data.engs(true);
-    const rows=engs.map(e=>{ const n=this.eventsFor(e).length;
-      return {e,n}; }).filter(r=>r.n>0);
+    const rows=engs.map(e=>{ const n=this.eventsFor(e).length; return {e,n}; }).filter(r=>r.n>0);
     const total=rows.reduce((a,r)=>a+r.n,0);
     UI.modal({title:I18N.t('nightReminderCal'),icon:'cal',wide:true,
       body:'<div class="note s">'+svg('check')+'<div>'+esc(I18N.t('icsHow'))+'</div></div>'
@@ -5117,7 +5129,7 @@ const ICS = {
         +'<div class="fld"><label>'+esc(I18N.t('reminderLead'))+'</label>'
           +'<input type="number" min="1" max="168" value="'+this.lead()+'" onchange="Data.state.settings.leadHours=+this.value||24;Data.save();ICS.dialog()">'
           +'<div class="hint">'+esc(I18N.t('icsTwoAlarms',{n:this.lead()}))+'</div></div></div>'
-        +'<div class="sect-t">'+esc(I18N.t('engineers'))+' — '+total+' '+esc(I18N.t('nightShiftsWord'))+'</div>'
+        +'<div class="sect-t">'+esc(I18N.t('engineers'))+' - '+total+' '+esc(I18N.t('nightShiftsWord'))+'</div>'
         +'<div style="max-height:250px;overflow:auto;border:1px solid var(--line);border-radius:12px">'
         +(rows.length?rows.map(r=>'<div class="ml-row"><span class="av">'+esc(initials(r.e.name))+'</span>'
             +'<span class="info"><b>'+esc(r.e.name)+'</b><span>'+esc(I18N.dept(r.e.dept))+' · '+r.n+' × ل</span></span>'
@@ -5130,7 +5142,6 @@ const ICS = {
           +svg('cal',14)+esc(I18N.t('icsAll'))+'</button>':'')});
   }
 };
-
 
 /* =====================================================================
    CONTACT PRIVACY
